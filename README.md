@@ -124,7 +124,21 @@ print(page["source"][:200])
 | `headless`    | `true`  | hidden virtual display, headed rendering pipeline          |
 | `SEED`        | —       | fixed fingerprint seed (reproducible runs)                  |
 | `QUIET_CANVAS`| `true`  | disable canvas pixel substitution (matches real Firefox)    |
+| `timezone`    | —       | pin an IANA zone, e.g. `Asia/Kolkata` (see note)            |
+| `locale`      | —       | pin a BCP-47 tag, e.g. `en-IN`                             |
 | `SKIP_LAUNCH` | `false` | `true` = serve the API without launching the browser        |
+
+### Timezone and proxy
+
+Set per request with `proxy`. The browser derives its timezone from the
+egress IP, but that GeoIP lookup is only as good as its database: measured
+here, a proxy in India (`<redacted-proxy-ip>`) came back as `Asia/Hong_Kong`.
+A mismatched timezone next to a foreign IP is a plain tell, so pin it:
+
+```powershell
+$env:timezone = "Asia/Kolkata"
+$env:locale = "en-IN"
+```
 
 ## API
 
@@ -197,13 +211,56 @@ Set the `timeOut` variable in milliseconds. The default is 60000.
 ## What changed vs the Node original
 
 - Browser: `puppeteer-real-browser` → `invisible_playwright` (async API),
-  one shared Firefox engine, one context per request.
-- Proxy: same `{host, port, username, password}` shape, mapped to the
-  engine's proxy config.
+  one context per request.
+- Cloudflare checkbox solving is explicit (`cf_scraper/jobs/_solve.py`):
+  the Node original delegates it to `puppeteer-real-browser`'s
+  `turnstile: true`, invisible_playwright clicks nothing on its own.
+- Proxy: same `{host, port, username, password}` shape. The engine is
+  launched **with** the proxy rather than given one per context - see
+  "Fingerprint coherence" below.
 - Canvas: pixel substitution is off by default (`QUIET_CANVAS=true`) so
   readback matches a real Firefox; set `QUIET_CANVAS=false` for stock
   behaviour.
 - `src/data/fakePage.html` is reused byte-for-byte for `turnstile-min`.
+
+## Fingerprint coherence
+
+A detector's cheapest signal is a pair of values that disagree, so this
+port fixes three measured contradictions rather than any single value.
+
+**Proxy is applied at launch, not per context.** The engine decides its
+timezone, locale and WebRTC candidate when it starts. Measured on one
+proxy (exit `<redacted-proxy-ip>`):
+
+| proxy applied | timezone | WebRTC candidate |
+|---|---|---|
+| per context | `Asia/Bangkok` | `<redacted-host-ip>` — the host's real IP |
+| at launch | `Asia/Hong_Kong` | `<redacted-proxy-ip>` — the proxy |
+
+Both problems are the same problem: with the proxy set afterwards, the
+fingerprint still describes the host. A leaked WebRTC candidate and a
+timezone that disagrees with the exit IP are each one `RTCPeerConnection`
+away from being read. Headless and headed behaved identically here, so this
+is about where the proxy is applied, not about rendering mode.
+
+`cf_scraper/browser_manager.py` therefore keeps one engine per proxy, with
+timezone and locale derived from that proxy's exit IP (`cf_scraper/geo.py`).
+Engines are refcounted and dropped when idle; the direct-connection engine
+is kept because `ready` reports on it.
+
+**Canvas reads back like a real browser.** With the stock engine setting,
+a simple canvas read back 9145 distinct colours where real Firefox gives 32,
+because every pixel is replaced with `hash(seed, idx)`. That is a loud
+outlier next to any real device. `QUIET_CANVAS=true` (the default here)
+turns it off, measured at 27 colours on the same content.
+
+**`Accept-Language` follows the proxy's country.** `waf-session` reads the
+header the browser actually sends, so it arrives as
+`zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7` for a Hong Kong exit rather than a
+fixed `en-US,en`.
+
+Set `AUTO_GEO=false` to keep one engine per zone without the geo lookup, or
+pin `timezone` / `locale` explicitly to override the derivation.
 
 ## Disclaimer of Liability
 

@@ -4,3 +4,11 @@ __pycache__/
 .env
 *.log
 .pytest_cache/
+
+# local diagnostics: proxy lists and results from your own network
+tools/_*.py
+tools/*.json
+proxys.txt
+working_proxies.json
+coherence_audit.json
+proxy_challenge_results.json

@@ -30,6 +30,9 @@ def create_app(
     headless: Optional[bool] = None,
     seed: Optional[int] = None,
     quiet_canvas: Optional[bool] = None,
+    timezone: Optional[str] = None,
+    locale: Optional[str] = None,
+    auto_geo: Optional[bool] = None,
     launch_browser: Optional[bool] = None,
 ) -> FastAPI:
     manager = BrowserManager(
@@ -38,6 +41,9 @@ def create_app(
         headless=config.HEADLESS if headless is None else headless,
         seed=seed,
         quiet_canvas=config.QUIET_CANVAS if quiet_canvas is None else quiet_canvas,
+        timezone=config.TIMEZONE if timezone is None else timezone,
+        locale=config.LOCALE if locale is None else locale,
+        auto_geo=config.AUTO_GEO if auto_geo is None else auto_geo,
     )
     token = config.AUTH_TOKEN if auth_token is _UNSET else auth_token
     launch = (not config.SKIP_LAUNCH) if launch_browser is None else launch_browser
