@@ -37,17 +37,6 @@ python3 -m venv .venv
 .venv/bin/python -m invisible_playwright fetch
 ```
 
-Docker:
-
-```bash
-docker build -t cf-scraper .
-docker run -d -p 3000:3000 \
-  -e PORT=3000 \
-  -e browserLimit=20 \
-  -e timeOut=60000 \
-  cf-scraper
-```
-
 Run:
 
 ```bash
@@ -160,7 +149,19 @@ Responses mirror the original: `{source, code: 200}`, `{token, code: 200}`,
 ```bash
 pytest tests/test_api.py -v        # no browser needed
 CF_LIVE=1 pytest tests/test_live.py -v   # launches the engine, uses network
+CF_WIDGET=1 pytest tests/test_widget.py -v  # localhost Turnstile pages, no third party
 ```
+
+Verified end to end against real server processes:
+
+- concurrency (`browserLimit=1`, 3 parallel): exactly `1x200 + 2x429`
+- plain pages: no solve delay (race between the 200/302 gate and the solver)
+- `timeOut` overflow: `500 "Timeout Error"`
+- dead proxy: fast `500 "Navigation failed: Problem loading page"`, server stays up
+- proxy chain: local CONNECT proxy logs the browser's `CONNECT`, job returns 200
+- `source` + `waf-session` live vs `nopecha.com/demo/cloudflare`, real `cf_clearance`
+- turnstile min/max vs localhost with Cloudflare test sitekeys (always-pass and
+  forced-challenge, the latter proving the checkbox click path)
 
 `test_live.py` mirrors the original repo's tests byte-for-byte (same demo
 URLs). Note: `turnstile.zeroclover.io` returned Cloudflare 502 Host Error

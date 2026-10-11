@@ -54,3 +54,66 @@ def test_not_found():
         response = client.get("/nope")
     assert response.status_code == 404
     assert response.json() == {"code": 404, "message": "Not Found"}
+
+
+def test_bad_url():
+    with _client() as client:
+        response = client.post(
+            "/cf-clearance-scraper", json={"url": "not-a-url", "mode": "source"}
+        )
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_missing_mode():
+    with _client() as client:
+        response = client.post(
+            "/cf-clearance-scraper", json={"url": "https://example.com/"}
+        )
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_extra_field_rejected():
+    with _client() as client:
+        response = client.post(
+            "/cf-clearance-scraper",
+            json={**BASE, "hacker": True},
+        )
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_proxy_port_must_be_integer():
+    with _client() as client:
+        response = client.post(
+            "/cf-clearance-scraper",
+            json={**BASE, "proxy": {"host": "127.0.0.1", "port": "8080"}},
+        )
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_proxy_missing_port():
+    with _client() as client:
+        response = client.post(
+            "/cf-clearance-scraper",
+            json={**BASE, "proxy": {"host": "127.0.0.1"}},
+        )
+    assert response.status_code == 400
+
+
+def test_non_object_body():
+    with _client() as client:
+        response = client.post("/cf-clearance-scraper", json=["source"])
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_wrong_auth_token():
+    with _client(auth_token="secret") as client:
+        response = client.post(
+            "/cf-clearance-scraper", json={**BASE, "authToken": "wrong"}
+        )
+    assert response.status_code == 401
+    assert response.json() == {"code": 401, "message": "Unauthorized"}

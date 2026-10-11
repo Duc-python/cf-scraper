@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ._common import JobError, track_doc_responses, wait_document_response, wait_loaded
+from ._common import JobError, goto_document, track_doc_responses, wait_document_response, wait_loaded
 from . import _solve
 
 _ACCEPT_LANGUAGE_JS = (
@@ -27,23 +27,27 @@ async def run(context: Any, url: str) -> dict[str, Any]:
     accept_language = await page.evaluate(_ACCEPT_LANGUAGE_JS)
     gate = asyncio.create_task(wait_document_response(page, url))
     seen = track_doc_responses(page, url)
+    solve = asyncio.create_task(_solve.click_until_clearance(page, context))
     try:
-        await page.goto(url, wait_until="domcontentloaded")
+        await goto_document(page, url, wait_until="domcontentloaded")
     except BaseException:
         gate.cancel()
+        solve.cancel()
         raise
     try:
-        solved = await _solve.click_until_clearance(page, context)
+        done, pending = await asyncio.wait(
+            {gate, solve}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
         response = None
-        if gate.done():
+        if gate in done:
             response = gate.result()
-        elif solved:
+        elif solve.result():
             try:
                 response = await asyncio.wait_for(asyncio.shield(gate), timeout=10)
             except asyncio.TimeoutError:
                 response = None
-        else:
-            response = await gate
         if response is None and seen:
             response = seen[-1]
         await wait_loaded(page)
@@ -54,5 +58,6 @@ async def run(context: Any, url: str) -> dict[str, Any]:
         headers["accept-language"] = accept_language
         return {"cookies": cookies, "headers": headers}
     finally:
-        if not gate.done():
-            gate.cancel()
+        for task in (gate, solve):
+            if not task.done():
+                task.cancel()

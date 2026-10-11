@@ -5,13 +5,17 @@ puppeteer-real-browser's `turnstile: true` auto-solver to click the
 "Verify you are human" checkbox. That step is explicit here
 (jobs._solve), everything else follows the original: resolve on the first
 200/302 for the exact document URL, then return the page source.
+
+The response gate and the solver race: plain pages resolve immediately
+through the gate (no solve delay), challenged pages resolve through the
+clearance cookie, then the post-solve navigation.
 """
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
-from ._common import JobError, wait_document_response, wait_loaded
+from ._common import JobError, goto_document, wait_document_response, wait_loaded
 from . import _solve
 
 _CHALLENGE_TITLE = ("just a moment", "chờ một chút")
@@ -47,23 +51,27 @@ async def run(context: Any, url: str) -> str:
         raise JobError("Missing url parameter")
     page = await context.new_page()
     gate = asyncio.create_task(wait_document_response(page, url))
+    solve = asyncio.create_task(_solve.click_until_clearance(page, context))
     try:
-        await page.goto(url, wait_until="domcontentloaded")
+        await goto_document(page, url, wait_until="domcontentloaded")
     except BaseException:
         gate.cancel()
+        solve.cancel()
         raise
     try:
-        solved = await _solve.click_until_clearance(page, context)
-        if not gate.done():
-            if solved:
-                try:
-                    await asyncio.wait_for(asyncio.shield(gate), timeout=10)
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await gate
+        done, pending = await asyncio.wait(
+            {gate, solve}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        if solve in done and solve.result() and not gate.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(gate), timeout=10)
+            except asyncio.TimeoutError:
+                pass
         await wait_loaded(page)
         return await _read_settled_source(page)
     finally:
-        if not gate.done():
-            gate.cancel()
+        for task in (gate, solve):
+            if not task.done():
+                task.cancel()

@@ -9,6 +9,23 @@ class JobError(Exception):
     """A job failure. str(exc) becomes the response 'message'."""
 
 
+async def goto_document(page: Any, url: str, **kwargs: Any) -> Any:
+    """goto that also rejects failed loads.
+
+    With a dead proxy Firefox shows an error page and goto resolves with a
+    None response instead of raising, which would otherwise hang the job
+    until the global timeout. Fail fast with a greppable message.
+    """
+    response = await page.goto(url, **kwargs)
+    if response is None:
+        try:
+            title = await page.title()
+        except Exception:
+            title = "unknown"
+        raise JobError(f"Navigation failed: {title}")
+    return response
+
+
 def doc_targets(url: str) -> tuple[str, str]:
     # mirrors [url, url + "/"]
     return (url, url + "/")
