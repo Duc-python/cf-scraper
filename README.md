@@ -119,7 +119,7 @@ print(page["source"][:200])
 |---------------|---------|-------------------------------------------------------------|
 | `PORT`        | `3000`  | HTTP port                                                   |
 | `browserLimit`| `20`    | max concurrent browser contexts (else HTTP 429)             |
-| `timeOut`     | `60000` | per-request timeout in ms (else "Timeout Error")            |
+| `timeOut`     | `55000` | per-request budget in ms (else "Timeout Error")             |
 | `authToken`   | —       | when set, requests need a matching `authToken` (else 401)   |
 | `headless`    | `true`  | hidden virtual display, headed rendering pipeline          |
 | `SEED`        | —       | fixed fingerprint seed (reproducible runs)                  |
@@ -176,6 +176,24 @@ Verified end to end against real server processes:
 - `source` + `waf-session` live vs `nopecha.com/demo/cloudflare`, real `cf_clearance`
 - turnstile min/max vs localhost with Cloudflare test sitekeys (always-pass and
   forced-challenge, the latter proving the checkbox click path)
+
+Wall clock, measured end to end through the API:
+
+| case | time |
+|---|---|
+| turnstile, always-pass | 4.5s |
+| turnstile, forced challenge | 5.0s |
+| source, no proxy | 8.4s |
+| source, with proxy | 17.1s |
+| waf-session against a live challenge | 10.0s |
+| waf-session, with proxy | 16.1s |
+
+The solve budget is deadline-aware rather than a fixed 20s: a fixed solve plus
+a fixed gate wait plus the settle reads can reach 47s, which is too close to a
+60s ceiling once the machine is busy. `cf_scraper/jobs/_common.py` carries the
+job deadline in a `ContextVar` and the solver sizes itself against what is
+actually left. Engine launch and geo resolution sit outside the job budget but
+still on the wall clock, which is why the default is 55000 and not 60000.
 
 `test_live.py` mirrors the original repo's tests byte-for-byte (same demo
 URLs). Note: `turnstile.zeroclover.io` returned Cloudflare 502 Host Error

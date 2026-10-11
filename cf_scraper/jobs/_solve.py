@@ -61,12 +61,21 @@ async def click_checkbox(page: Any) -> bool:
     return True
 
 
-async def click_until_clearance(page: Any, context: Any, budget_s: float = 20) -> bool:
-    """Best-effort solve: click, poll the cf_clearance cookie, repeat."""
+async def click_until_clearance(page: Any, context: Any, budget_s: float = 20,
+                                 reserve_s: float = 12) -> bool:
+    """Best-effort solve: click, poll the cf_clearance cookie, repeat.
+
+    The budget is capped by whatever the job deadline still allows, leaving
+    `reserve_s` for the steps that follow (gate wait, load, settle reads).
+    """
+    from ._common import remaining_s
+
+    budget_s = max(2.0, min(budget_s, remaining_s(reserve_s) - 2))
     if await has_clearance(context):
         return True
-    deadline = asyncio.get_running_loop().time() + budget_s
-    while asyncio.get_running_loop().time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget_s
+    while loop.time() < deadline:
         await click_checkbox(page)
         await asyncio.sleep(2)
         if await has_clearance(context):

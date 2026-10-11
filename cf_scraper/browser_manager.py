@@ -14,12 +14,13 @@ reused, keyed by proxy, with a refcount so the last job closes them.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 from invisible_playwright.async_api import InvisiblePlaywright
 
 from . import config
-from .jobs._common import JobError
+from .jobs._common import JobError, set_deadline
 from .schemas import ProxyConfig
 
 
@@ -176,12 +177,16 @@ class BrowserManager:
                 except Exception:
                     raise JobError("Failed to create browser context")
                 try:
-                    return await asyncio.wait_for(job(context), timeout=self.timeout_s)
-                except asyncio.TimeoutError:
-                    raise JobError("Timeout Error")
-                except asyncio.CancelledError:
-                    # an inner wait_for re-raises CancelledError, not TimeoutError
-                    raise JobError("Timeout Error")
+                    reset_deadline = set_deadline(time.monotonic() + self.timeout_s)
+                    try:
+                        return await asyncio.wait_for(job(context), timeout=self.timeout_s)
+                    except asyncio.TimeoutError:
+                        raise JobError("Timeout Error")
+                    except asyncio.CancelledError:
+                        # an inner wait_for re-raises CancelledError, not TimeoutError
+                        raise JobError("Timeout Error")
+                finally:
+                    reset_deadline()
         finally:
             if context is not None:
                 try:

@@ -25,7 +25,10 @@ def _bool(name: str, default: bool) -> bool:
 
 PORT: int = _int("PORT", 3000)
 BROWSER_LIMIT: int = _int("browserLimit", 20)
-TIMEOUT_MS: int = _int("timeOut", 60000)
+# Per-request budget. The Node original defaulted to 60000; 55000 keeps the
+# whole request under a 60s ceiling once engine launch and geo resolution sit
+# outside the job budget but still on the wall clock.
+TIMEOUT_MS: int = _int("timeOut", 55000)
 AUTH_TOKEN: str | None = os.getenv("authToken") or None
 HEADLESS: bool = _bool("headless", True)
 

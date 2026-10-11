@@ -44,10 +44,14 @@ async def run(context: Any, url: str) -> dict[str, Any]:
         if gate in done:
             response = gate.result()
         elif solve.result():
-            try:
-                response = await asyncio.wait_for(asyncio.shield(gate), timeout=10)
-            except asyncio.TimeoutError:
-                response = None
+            from ._common import remaining_s
+
+            budget = min(10, remaining_s(6))
+            if budget > 0:
+                try:
+                    response = await asyncio.wait_for(asyncio.shield(gate), timeout=budget)
+                except asyncio.TimeoutError:
+                    response = None
         if response is None and seen:
             response = seen[-1]
         await wait_loaded(page)

@@ -27,9 +27,12 @@ async def _read_settled_source(page: Any, tries: int = 6) -> str:
 
     The clearance cookie can land while Cloudflare is still submitting the
     challenge form, so the first content() may be the challenge page itself.
+    Stops early once the job deadline is close, to stay under the ceiling.
     """
+    from ._common import remaining_s
+
     html = ""
-    for _ in range(tries):
+    for attempt in range(tries):
         html = await page.content()
         try:
             title = (await page.title() or "").lower()
@@ -41,8 +44,10 @@ async def _read_settled_source(page: Any, tries: int = 6) -> str:
             or any(marker in lowered for marker in _CHALLENGE_HTML)
         ):
             return html
+        if remaining_s(3) <= 0:
+            break
         await wait_loaded(page)
-        await asyncio.sleep(2)
+        await asyncio.sleep(1 if attempt else 2)
     return html
 
 
@@ -65,10 +70,14 @@ async def run(context: Any, url: str) -> str:
         for task in pending:
             task.cancel()
         if solve in done and solve.result() and not gate.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(gate), timeout=10)
-            except asyncio.TimeoutError:
-                pass
+            from ._common import remaining_s
+
+            budget = min(10, remaining_s(6))
+            if budget > 0:
+                try:
+                    await asyncio.wait_for(asyncio.shield(gate), timeout=budget)
+                except asyncio.TimeoutError:
+                    pass
         await wait_loaded(page)
         return await _read_settled_source(page)
     finally:

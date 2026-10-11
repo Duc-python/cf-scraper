@@ -2,7 +2,35 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import contextvars
+import time
+from typing import Any, Callable
+
+# Set by BrowserManager.run for the duration of a job, so the solver can
+# size its own budget against what is actually left. A fixed 20s solve plus
+# a 10s gate plus the settle reads can reach 47s, which leaves too little
+# headroom under a 60s ceiling once the machine is busy.
+_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "cf_deadline", default=None
+)
+
+
+def set_deadline(when: float | None) -> Callable[[], None]:
+    """Set the job deadline; returns a callable that restores the previous one."""
+    token = _DEADLINE.set(when)
+
+    def reset() -> None:
+        _DEADLINE.reset(token)
+
+    return reset
+
+
+def remaining_s(reserve: float = 0.0) -> float:
+    """Seconds left in this job, never negative."""
+    when = _DEADLINE.get()
+    if when is None:
+        return float("inf")
+    return max(0.0, when - reserve - time.monotonic())
 
 
 class JobError(Exception):
