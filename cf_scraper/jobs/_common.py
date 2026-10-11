@@ -107,8 +107,24 @@ def read_token_js() -> str:
     )
 
 
-async def wait_for_token(page: Any, timeout_ms: int = 60000) -> str:
-    """Poll for the Turnstile token until the deadline.
+DUMMY_TOKENS = {
+    "XXXX.DUMMY.TOKEN.XXXX",
+    "XXXX.DUMMY.TOKEN.XXXX1",
+}
+
+
+def is_dummy(token: str) -> bool:
+    """Cloudflare returns this placeholder for its documented test sitekeys.
+
+    Reporting it as a success is worse than reporting nothing: a real site
+    will reject it, so a caller cannot tell a placeholder from a real token.
+    """
+    return not token or token in DUMMY_TOKENS or token.startswith("XXXX.DUMMY")
+
+
+async def wait_for_token(page: Any, timeout_ms: int = 60000,
+                         reader: str | None = None) -> str:
+    """Poll for a real Turnstile token until the deadline.
 
     wait_for_selector is unusable here: a challenge solve reloads the document
     mid-wait and the destroyed execution context fails the wait with
@@ -117,16 +133,33 @@ async def wait_for_token(page: Any, timeout_ms: int = 60000) -> str:
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_ms / 1000.0
+    saw_dummy = False
     while True:
         try:
-            token = await page.evaluate(read_token_js())
+            value = await page.evaluate(reader or read_token_js())
         except Exception:
-            token = None
-        if token and len(token) >= 10:
-            return token
+            value = None
+        if reader is not None and isinstance(value, list):
+            for entry in value:
+                token = (entry or {}).get("token") or ""
+                if len(token) >= 10 and not is_dummy(token):
+                    return token
+                if token:
+                    saw_dummy = True
+        elif isinstance(value, str):
+            if len(value) >= 10 and not is_dummy(value):
+                return value
+            if value:
+                saw_dummy = True
         if loop.time() >= deadline:
             break
         await asyncio.sleep(1)
+    if saw_dummy:
+        raise JobError(
+            "Got only Cloudflare's placeholder token - this sitekey is one of "
+            "their documented test keys (XXXX.DUMMY.TOKEN.XXXX), which never "
+            "produces a usable token"
+        )
     raise JobError("Failed to get token")
 
 

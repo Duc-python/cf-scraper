@@ -166,7 +166,36 @@ CF_LIVE=1 pytest tests/test_live.py -v   # launches the engine, uses network
 CF_WIDGET=1 pytest tests/test_widget.py -v  # localhost Turnstile pages, no third party
 ```
 
-Verified end to end against real server processes:
+## Turnstile token capture
+
+`turnstile-max` reads the hidden `cf-turnstile-response` input that Cloudflare
+creates next to every widget it renders. Two approaches were tried first and
+are documented here because both are wrong in ways that look like success:
+
+- **Polling `[name="cf-response"]`** - only exists if the page's own callback
+  creates one. A real page usually does not; its callback POSTs the token
+  somewhere instead. On a real sitekey this failed 7 times out of 8.
+- **Wrapping `window.turnstile.render`** via a property setter to intercept
+  the page's callback. It works in principle but breaks the widget: with the
+  wrapper installed, nopecha.com/demo/turnstile renders nothing at all, because
+  Cloudflare's api.js does not survive `window.turnstile` being an accessor
+  before it loads.
+- **`window.turnstile.getResponse()`** with no widget argument returns the
+  *first* widget's token. On a page carrying both a real sitekey and one of
+  Cloudflare's test keys, that hands back `XXXX.DUMMY.TOKEN.XXXX`.
+
+Cloudflare's documented test sitekeys (`1x...`, `3x...`) return that
+placeholder instead of a token. Any captured placeholder is now rejected with
+an explanatory message rather than reported as success - a caller cannot tell
+a placeholder from a real token by length alone, and reporting one as a
+success is worse than reporting nothing.
+
+Verified against a live page using a production-style sitekey
+(`0x4...`, read from the page rather than assumed), headless and headed, direct
+and through a proxy: 3/3 real tokens of 645-709 characters, against a
+placeholder length of 21. Tokens are read from the DOM and never submitted.
+
+## Verified behaviour
 
 - concurrency (`browserLimit=1`, 3 parallel): exactly `1x200 + 2x429`
 - plain pages: no solve delay (race between the 200/302 gate and the solver)

@@ -6,6 +6,7 @@ from typing import Any
 
 from ._common import JobError, doc_targets, goto_document, wait_for_token
 from . import _solve
+from .turnstile_max import READ_TOKEN_JS
 
 _FAKE_PAGE = Path(__file__).resolve().parent.parent / "data" / "fake_page.html"
 
@@ -29,4 +30,4 @@ async def run(context: Any, url: str, site_key: str | None) -> str:
     page = await context.new_page()
     await goto_document(page, url, wait_until="domcontentloaded")
     await _solve.attempt_widget_clicks(page)
-    return await wait_for_token(page, timeout_ms=60000)
+    return await wait_for_token(page, timeout_ms=60000, reader=READ_TOKEN_JS)
