@@ -119,7 +119,7 @@ print(page["source"][:200])
 |---------------|---------|-------------------------------------------------------------|
 | `PORT`        | `3000`  | HTTP port                                                   |
 | `browserLimit`| `20`    | max concurrent browser contexts (else HTTP 429)             |
-| `timeOut`     | `55000` | per-request budget in ms (else "Timeout Error")             |
+| `timeOut`     | `150000`| per-request budget in ms (else "Timeout Error")             |
 | `authToken`   | —       | when set, requests need a matching `authToken` (else 401)   |
 | `headless`    | `true`  | hidden virtual display, headed rendering pipeline          |
 | `SEED`        | —       | fixed fingerprint seed (reproducible runs)                  |
@@ -188,12 +188,22 @@ Wall clock, measured end to end through the API:
 | waf-session against a live challenge | 10.0s |
 | waf-session, with proxy | 16.1s |
 
-The solve budget is deadline-aware rather than a fixed 20s: a fixed solve plus
-a fixed gate wait plus the settle reads can reach 47s, which is too close to a
-60s ceiling once the machine is busy. `cf_scraper/jobs/_common.py` carries the
-job deadline in a `ContextVar` and the solver sizes itself against what is
-actually left. Engine launch and geo resolution sit outside the job budget but
-still on the wall clock, which is why the default is 55000 and not 60000.
+The solve budget is deadline-aware rather than fixed: a fixed solve plus a
+fixed gate wait plus the settle reads can run well past what is left, which is
+how a job overran its budget. `cf_scraper/jobs/_common.py` carries the job
+deadline in a `ContextVar` and the solver sizes itself against what remains,
+reserving room for the steps after it. The solver returns the instant
+cf_clearance lands, so the budget only bounds the failing case - a healthy
+request costs the same regardless of what you set `timeOut` to. The default is
+150s because engine launch (~5s) and geo resolution sit outside the job budget
+but still on the wall clock, and a slow proxy leaves little room for the solve.
+
+Tune it per proxy if needed:
+
+```powershell
+$env:timeOut = "90000"   # proxy chậm: vẫn dư thời gian cho challenge
+$env:timeOut = "600000"  # proxy rất chậm hoặc nhiều challenge nối tiếp
+```
 
 `test_live.py` mirrors the original repo's tests byte-for-byte (same demo
 URLs). Note: `turnstile.zeroclover.io` returned Cloudflare 502 Host Error

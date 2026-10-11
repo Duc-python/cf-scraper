@@ -25,10 +25,12 @@ def _bool(name: str, default: bool) -> bool:
 
 PORT: int = _int("PORT", 3000)
 BROWSER_LIMIT: int = _int("browserLimit", 20)
-# Per-request budget. The Node original defaulted to 60000; 55000 keeps the
-# whole request under a 60s ceiling once engine launch and geo resolution sit
-# outside the job budget but still on the wall clock.
-TIMEOUT_MS: int = _int("timeOut", 55000)
+# Per-request budget in ms. The Node original defaulted to 60000. Raised to
+# 150s because engine launch (~5s) plus geo resolution sit outside the job
+# budget but still on the wall clock, and a slow proxy leaves little room for
+# the challenge solve. The solver still returns as soon as clearance lands, so
+# a healthy request is unaffected.
+TIMEOUT_MS: int = _int("timeOut", 150000)
 AUTH_TOKEN: str | None = os.getenv("authToken") or None
 HEADLESS: bool = _bool("headless", True)
 

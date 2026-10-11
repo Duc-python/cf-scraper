@@ -61,12 +61,14 @@ async def click_checkbox(page: Any) -> bool:
     return True
 
 
-async def click_until_clearance(page: Any, context: Any, budget_s: float = 20,
+async def click_until_clearance(page: Any, context: Any, budget_s: float = 60,
                                  reserve_s: float = 12) -> bool:
     """Best-effort solve: click, poll the cf_clearance cookie, repeat.
 
-    The budget is capped by whatever the job deadline still allows, leaving
-    `reserve_s` for the steps that follow (gate wait, load, settle reads).
+    Returns the moment cf_clearance lands, so a healthy request costs the same
+    whatever this budget is - the cap only bounds the failing case. Capped by
+    whatever the job deadline still allows, leaving `reserve_s` for the steps
+    that follow (gate wait, load, settle reads).
     """
     from ._common import remaining_s
 
