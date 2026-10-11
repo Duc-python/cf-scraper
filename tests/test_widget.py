@@ -1,9 +1,16 @@
 """Widget tests against localhost - no third-party demo site needed.
 
-Serves explicit Turnstile pages using Cloudflare's documented test sitekeys,
-then runs the real min/max jobs through the API:
-- 1x00000000000000000000AA always passes (render + callback + read chain)
-- 3x00000000000000000000FF forces an interactive challenge (click path)
+Serves explicit Turnstile pages using Cloudflare's documented TEST sitekeys,
+then runs the real min/max jobs through the API.
+
+These sitekeys do not produce usable tokens: Cloudflare answers
+`XXXX.DUMMY.TOKEN.XXXX`, 21 characters, every time - that is their documented
+behaviour for `1x...` and `3x...`. So the expectation here is a 500 carrying
+the explanation, not a 200. An earlier version of this file asserted the
+opposite, which is how a placeholder token kept passing as a success.
+
+Real-token behaviour is covered separately against a production-style sitekey
+(see README, "Turnstile token capture").
 
 Needs the engine and network access to challenges.cloudflare.com.
 Run with:  CF_WIDGET=1 pytest tests/test_widget.py -v
@@ -63,24 +70,31 @@ def client():
         yield client
 
 
+def assert_placeholder_rejected(response):
+    """The widget rendered and answered; the answer is a placeholder."""
+    assert response.status_code == 500
+    body = response.json()
+    assert body["code"] == 500
+    assert "placeholder" in body["message"]
+    assert "test keys" in body["message"]
+
+
 def test_max_always_pass(client, origin):
+    """Renders and answers; the answer is a placeholder and must be refused."""
     response = client.post(
         "/cf-clearance-scraper",
         json={"url": f"{origin}/pass", "mode": "turnstile-max"},
     )
-    assert response.status_code == 200
-    assert response.json()["code"] == 200
-    assert len(response.json()["token"]) >= 10
+    assert_placeholder_rejected(response)
 
 
 def test_max_forced_challenge(client, origin):
+    """Forced-challenge key: the click path runs, the answer is still a placeholder."""
     response = client.post(
         "/cf-clearance-scraper",
         json={"url": f"{origin}/challenge", "mode": "turnstile-max"},
     )
-    assert response.status_code == 200
-    assert response.json()["code"] == 200
-    assert len(response.json()["token"]) >= 10
+    assert_placeholder_rejected(response)
 
 
 def test_min_fake_page(client, origin):
@@ -88,6 +102,4 @@ def test_min_fake_page(client, origin):
         "/cf-clearance-scraper",
         json={"url": f"{origin}/anything", "siteKey": ALWAYS_PASS, "mode": "turnstile-min"},
     )
-    assert response.status_code == 200
-    assert response.json()["code"] == 200
-    assert len(response.json()["token"]) >= 10
+    assert_placeholder_rejected(response)

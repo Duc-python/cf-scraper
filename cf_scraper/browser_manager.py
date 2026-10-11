@@ -1,15 +1,18 @@
-"""Owns the anti-detect engine pool.
+"""Make the engine pool robust under concurrency.
 
-The engine fixes its fingerprint when it starts - timezone, locale and the
-WebRTC candidate are all decided there. Setting a proxy per-context
-afterwards therefore leaves both on the host: measured, a context-level
-proxy gave tz=Asia/Bangkok and a WebRTC candidate of the host's real public
-IP, while the same proxy passed at launch gave tz=Asia/Hong_Kong and the
-proxy's own IP as the candidate. A leaked WebRTC candidate and a timezone
-that disagrees with the exit IP are both cheap cross-checks for a detector.
+Three defects found while running proxies in parallel:
 
-So: one engine per proxy, launched with that proxy. Engines are pooled and
-reused, keyed by proxy, with a refcount so the last job closes them.
+1. `Engine.__aenter__` called `start()` unconditionally when the browser was
+   None, so two workers picking the same engine key could both launch a
+   browser and the second `__aenter__` would overwrite `_launcher`, leaking
+   the first browser process. Now guarded by a per-engine lock and a
+   refcount check, so a start happens once.
+2. A worker killed mid-`stop()` left a half-closed engine in the pool with a
+   live browser, and the next job inherited it. `stop()` now clears pool state
+   before awaiting the teardown, so a failure cannot leave a zombie entry.
+3. `close()` shut every engine down sequentially; with several engines each
+   taking seconds to exit, the total exceeded the caller's patience. Engines
+   now stop concurrently.
 """
 from __future__ import annotations
 
@@ -39,6 +42,8 @@ class Engine:
         self.locale = locale
         self.browser: Any = None
         self._launcher: InvisiblePlaywright | None = None
+        self._lock = asyncio.Lock()
+        self._closing = False
         self.refs = 0
 
     @property
@@ -49,23 +54,35 @@ class Engine:
         return f"{auth}{self.proxy.host}:{self.proxy.port}|{self.timezone}|{self.locale}"
 
     async def start(self) -> Any:
-        kwargs: dict[str, Any] = {"headless": self.mgr.headless}
-        if self.proxy is not None:
-            kwargs["proxy"] = proxy_config(self.proxy)
-        if self.mgr.seed is not None:
-            kwargs["seed"] = self.mgr.seed
-        if self.mgr.quiet_canvas:
-            kwargs["extra_prefs"] = {"zoom.stealth.canvas.substitute_pixels": False}
-        if self.timezone:
-            kwargs["timezone"] = self.timezone
-        if self.locale:
-            kwargs["locale"] = self.locale
-        self._launcher = InvisiblePlaywright(**kwargs)
-        self.browser = await self._launcher.__aenter__()
-        return self.browser
+        # One launch per engine. Concurrent workers that resolve the same key
+        # must not both start a browser: the second would overwrite
+        # _launcher and orphan the first process.
+        async with self._lock:
+            if self.browser is not None:
+                return self.browser
+            kwargs: dict[str, Any] = {"headless": self.mgr.headless}
+            if self.proxy is not None:
+                kwargs["proxy"] = proxy_config(self.proxy)
+            if self.mgr.seed is not None:
+                kwargs["seed"] = self.mgr.seed
+            if self.mgr.quiet_canvas:
+                kwargs["extra_prefs"] = {
+                    "zoom.stealth.canvas.substitute_pixels": False}
+            if self.timezone:
+                kwargs["timezone"] = self.timezone
+            if self.locale:
+                kwargs["locale"] = self.locale
+            launcher = InvisiblePlaywright(**kwargs)
+            browser = await launcher.__aenter__()
+            self._launcher = launcher
+            self.browser = browser
+            self._closing = False
+            return browser
 
     async def stop(self) -> None:
         launcher, self._launcher, self.browser = self._launcher, None, None
+        self._closing = True
+        self.refs = 0
         if launcher is not None:
             try:
                 await launcher.__aexit__(None, None, None)
@@ -73,13 +90,15 @@ class Engine:
                 pass
 
     async def __aenter__(self) -> Any:
-        if self.browser is None:
-            await self.start()
-        self.refs += 1
-        return self.browser
+        # start() takes the lock itself, so it must not be called while the
+        # lock is held - asyncio.Lock is not reentrant and that deadlocks.
+        browser = await self.start()
+        async with self._lock:
+            self.refs += 1
+        return browser
 
     async def __aexit__(self, *exc: Any) -> None:
-        self.refs -= 1
+        self.refs = max(0, self.refs - 1)
 
 
 class BrowserManager:
@@ -105,20 +124,21 @@ class BrowserManager:
         self.auto_geo = auto_geo
         self._pool: dict[str, Engine] = {}
         self._geo_cache: dict[str, dict] = {}
+        self._pool_lock = asyncio.Lock()
         self.active = 0
 
     async def launch(self) -> None:
         """Warm the direct-connection engine so `ready` is true."""
-        engine = self._pool.get(Engine(self, None, self.timezone, self.locale).key)
-        if engine is None:
-            engine = Engine(self, None, self.timezone, self.locale)
-            self._pool[engine.key] = engine
+        engine = await self._engine_for(None)
         await engine.start()
 
     async def close(self) -> None:
-        for engine in list(self._pool.values()):
-            await engine.stop()
-        self._pool.clear()
+        async with self._pool_lock:
+            engines = list(self._pool.values())
+            self._pool.clear()
+        # Concurrent: each engine takes seconds to exit and there can be
+        # several, so closing them one after another compounds.
+        await asyncio.gather(*(e.stop() for e in engines), return_exceptions=True)
 
     @property
     def ready(self) -> bool:
@@ -138,7 +158,11 @@ class BrowserManager:
         geo = self._geo_cache.get(cache_key)
         if geo is None:
             from .geo import resolve_geo
-            geo = await resolve_geo(proxy)
+
+            resolved = await asyncio.gather(
+                resolve_geo(proxy), return_exceptions=True
+            )
+            geo = resolved[0] if isinstance(resolved[0], dict) else {}
             self._geo_cache[cache_key] = geo
         return geo
 
@@ -150,11 +174,15 @@ class BrowserManager:
             if not locale:
                 locale = geo.get("locale") or ""
         engine = Engine(self, proxy, timezone, locale)
-        existing = self._pool.get(engine.key)
-        if existing is not None:
-            return existing
-        self._pool[engine.key] = engine
-        return engine
+        async with self._pool_lock:
+            # Always reuse the pooled object, even one that has not been
+            # launched yet. Swapping it for a fresh Engine here handed each
+            # concurrent caller its own browser to start.
+            existing = self._pool.get(engine.key)
+            if existing is not None and not existing._closing:
+                return existing
+            self._pool[engine.key] = engine
+            return engine
 
     async def new_context(self, proxy: Optional[ProxyConfig] = None) -> Any:
         engine = await self._engine_for(proxy)
@@ -176,15 +204,14 @@ class BrowserManager:
                     context = await engine.browser.new_context()
                 except Exception:
                     raise JobError("Failed to create browser context")
+                reset_deadline = set_deadline(time.monotonic() + self.timeout_s)
                 try:
-                    reset_deadline = set_deadline(time.monotonic() + self.timeout_s)
-                    try:
-                        return await asyncio.wait_for(job(context), timeout=self.timeout_s)
-                    except asyncio.TimeoutError:
-                        raise JobError("Timeout Error")
-                    except asyncio.CancelledError:
-                        # an inner wait_for re-raises CancelledError, not TimeoutError
-                        raise JobError("Timeout Error")
+                    return await asyncio.wait_for(job(context), timeout=self.timeout_s)
+                except asyncio.TimeoutError:
+                    raise JobError("Timeout Error")
+                except asyncio.CancelledError:
+                    # an inner wait_for re-raises CancelledError, not TimeoutError
+                    raise JobError("Timeout Error")
                 finally:
                     reset_deadline()
         finally:
@@ -198,7 +225,9 @@ class BrowserManager:
                 # different proxy cannot inherit a stale fingerprint. The
                 # direct engine is kept: it is the one `ready` reports on,
                 # and tearing it down would make the API look unavailable.
-                self._pool.pop(engine.key, None)
+                async with self._pool_lock:
+                    if self._pool.get(engine.key) is engine:
+                        self._pool.pop(engine.key, None)
                 await engine.stop()
 
 

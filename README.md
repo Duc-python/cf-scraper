@@ -161,10 +161,22 @@ Responses mirror the original: `{source, code: 200}`, `{token, code: 200}`,
 ## Tests
 
 ```bash
-pytest tests/test_api.py -v        # no browser needed
+pytest tests/ -v                      # unit + engine pool, no browser needed
 CF_LIVE=1 pytest tests/test_live.py -v   # launches the engine, uses network
 CF_WIDGET=1 pytest tests/test_widget.py -v  # localhost Turnstile pages, no third party
 ```
+
+`tests/test_pool.py` covers the engine pool's races and lifecycle with a fake
+launcher, so it runs in under two seconds and needs no browser. It guards three
+defects found while running proxies in parallel:
+
+- `Engine.__aenter__` held the lock while calling `start()`, which takes the
+  same lock - `asyncio.Lock` is not reentrant, so any context entering an
+  engine deadlocked permanently.
+- `_engine_for` replaced a pooled engine that had not been launched yet, so
+  concurrent callers on the same key each got their own browser to start.
+- `close()` tore engines down one after another, so the total grew with the
+  pool size.
 
 ## Turnstile token capture
 
